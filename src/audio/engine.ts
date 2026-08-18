@@ -1,0 +1,99 @@
+import { PitchDetector } from "./pitch";
+import { toReading, type PitchReading } from "./noteUtils";
+
+export interface AudioFrame {
+  time: number;
+  rms: number;
+  reading: PitchReading | null;
+}
+
+/**
+ * Owns the microphone stream and produces ~60 analysis frames per second.
+ * Echo cancellation, noise suppression and auto gain are disabled — they are
+ * tuned for speech and mangle bowed-string signals.
+ */
+export class AudioEngine {
+  a4 = 440;
+  running = false;
+  /** Detection range, set per instrument mode before start(). */
+  minFreq = 150;
+  maxFreq = 3200;
+  onFrame?: (frame: AudioFrame) => void;
+
+  private ctx: AudioContext | null = null;
+  private stream: MediaStream | null = null;
+  private analyser: AnalyserNode | null = null;
+  private buf: Float32Array | null = null;
+  private detector: PitchDetector | null = null;
+  private raf = 0;
+
+  /** List available microphones (labels appear once permission is granted). */
+  async listInputs(): Promise<Array<{ deviceId: string; label: string }>> {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices
+        .filter((d) => d.kind === "audioinput")
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Microphone ${i + 1}` }));
+    } catch {
+      return [];
+    }
+  }
+
+  async start(deviceId?: string): Promise<void> {
+    if (this.running) return;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+    this.ctx = new AudioContext();
+    if (this.ctx.state === "suspended") await this.ctx.resume();
+    const source = this.ctx.createMediaStreamSource(this.stream);
+    this.analyser = this.ctx.createAnalyser();
+    // 4096 samples (~85 ms at 48 kHz) so low notes get enough periods.
+    this.analyser.fftSize = 4096;
+    source.connect(this.analyser);
+    this.buf = new Float32Array(this.analyser.fftSize);
+    this.detector = new PitchDetector(this.ctx.sampleRate, this.minFreq, this.maxFreq);
+    this.running = true;
+    const loop = () => {
+      if (!this.running) return;
+      this.tick();
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  private tick() {
+    const analyser = this.analyser;
+    const buf = this.buf;
+    if (!analyser || !buf) return;
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    let reading: PitchReading | null = null;
+    if (rms > 0.0012) {
+      const est = this.detector!.detect(buf);
+      if (est && est.clarity >= 0.6) {
+        reading = toReading(est.freq, est.clarity, rms, this.a4);
+      }
+    }
+    this.onFrame?.({ time: performance.now(), rms, reading });
+  }
+
+  stop() {
+    this.running = false;
+    cancelAnimationFrame(this.raf);
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    void this.ctx?.close().catch(() => undefined);
+    this.ctx = null;
+    this.analyser = null;
+    this.detector = null;
+    this.buf = null;
+  }
+}
