@@ -119,6 +119,36 @@ on each note and advances only when the correct pitch is played.
       by the user. If the classical ear proves too weak on real audio,
       phase B is Basic Pitch (Spotify, Apache-2.0, ONNX in browser).
 
+## v1.7 — AI polyphonic ear + mobile web (shipped 2026-08-19)
+
+- [x] Basic Pitch (Spotify, Apache-2.0) as a second chord-verification ear:
+      runs fully locally via TensorFlow.js (model vendored in
+      public/models/basic-pitch, ~0.9 MB with its LICENSE; tfjs code-split
+      into a lazy chunk the violin mode never loads). An AudioWorklet feeds
+      a gapless 22050 Hz stream (drift-free chunk-invariant resampler,
+      unit-tested); inference runs every ~450 ms over the last ~2 s; note
+      posteriors reduce to the same ChordEvidence interface the spectral
+      comb uses, so the follower is untouched.
+- [x] The ML ear separates octaves — verified in-browser on To Zanarkand's
+      B1+B2+D4+F#4+B4: B1 0.80 / B2 0.77, control tone 0.11, follower
+      advanced with requireAllTones. Ear picker ("AI" default / "spectral")
+      appears in piano mode with full chords on; spectral comb remains the
+      automatic fallback while the model loads or goes stale.
+- [x] Mobile web: responsive layout below 720 px (2×2 tuner grid, one-row
+      thumb-scrollable settings, grouped zoom, safe-area insets), 44 px
+      touch targets on coarse pointers, iOS focus-zoom guard (16 px
+      selects), tap-highlight/touch-action hygiene. Verified at 375×812
+      portrait and 812×375 landscape with zero horizontal overflow.
+- [x] PWA shell: manifest + generated icons (192/512/apple-touch),
+      standalone display, theme color. No service worker yet — the dev
+      server is the only origin today; revisit if the app gets deployed.
+- [x] `npm run dev:phone`: HTTPS + LAN host via @vitejs/plugin-basic-ssl
+      (dev-only dep) so a real phone can open the mic — getUserMedia
+      requires a secure context off-localhost. Accept the self-signed
+      cert once on the phone.
+- [x] 78 tests green; production build clean. Real-piano test of both ears
+      still owed by the user (mic hardware never existed in the test pane).
+
 ## Later (roadmap, not in v1)
 
 - iOS app: wrap the web app with Capacitor (WKWebView supports getUserMedia +

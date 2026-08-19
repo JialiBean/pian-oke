@@ -135,6 +135,14 @@ export default function App() {
       return false;
     }
   });
+  const [chordEar, setChordEar] = useState<"ml" | "spectral">(() => {
+    try {
+      return localStorage.getItem("jv-chord-ear") === "spectral" ? "spectral" : "ml";
+    } catch {
+      return "ml";
+    }
+  });
+  const [mlState, setMlState] = useState("idle");
   const [pdfImport, setPdfImport] = useState<{ bytes: Uint8Array; name: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -228,6 +236,7 @@ export default function App() {
     playbackRef.current = playback;
 
     const audio = new AudioEngine();
+    audio.onMlState = (state) => setMlState(state);
     audio.onFrame = (frame: AudioFrame) => {
       const r = frame.reading;
       if (levelEl.current) {
@@ -325,6 +334,18 @@ export default function App() {
   }, [currentIndex, fullChords, mode, eventCount, scoreTitle]);
 
   useEffect(() => {
+    const engine = audioRef.current;
+    if (engine) {
+      engine.setChordEar(mode === "piano" && fullChords ? chordEar : "spectral");
+    }
+    try {
+      localStorage.setItem("jv-chord-ear", chordEar);
+    } catch {
+      // best-effort
+    }
+  }, [chordEar, fullChords, mode]);
+
+  useEffect(() => {
     showMistakesRef.current = showMistakes;
     try {
       localStorage.setItem("jv-show-mistakes", showMistakes ? "1" : "0");
@@ -386,12 +407,64 @@ export default function App() {
       const span = correct ? 240 : 340; // miss must outlast wrongMs to report
       for (let ms = 61; ms <= span; ms += 20) follower.feed(loud(t0 + ms));
     };
+    // Runs the REAL Basic Pitch model on synthesized piano-ish audio for the
+    // current event, then feeds the follower frames carrying the model's own
+    // evidence — the full ML chain minus the microphone.
+    const mlTest = async () => {
+      const follower = followerRef.current;
+      const engine = audioRef.current;
+      if (!follower || !engine || follower.index >= follower.events.length) {
+        return "no current event";
+      }
+      const event = follower.events[follower.index];
+      const ear = engine.ensureMl();
+      await ear.load();
+      if (ear.state !== "ready") return `model ${ear.state}: ${ear.detail}`;
+      const sr = 22050;
+      const n = Math.floor(sr * 2.4);
+      const buf = new Float32Array(n);
+      const amps = [1, 0.55, 0.35, 0.22, 0.14];
+      for (const m of event.midis) {
+        const f0 = midiToFreq(m, a4Ref.current);
+        amps.forEach((a, k) => {
+          const f = f0 * (k + 1);
+          if (f >= sr / 2) return;
+          const w = (2 * Math.PI * f) / sr;
+          for (let i = 0; i < n; i++) {
+            buf[i] += (a / event.midis.length) * Math.sin(w * i + k);
+          }
+        });
+      }
+      for (let i = 0; i < n; i++) {
+        const t = i / sr;
+        buf[i] *= Math.min(1, t / 0.01) * Math.exp(-t / 1.8) * 0.4;
+      }
+      await ear.infer(buf);
+      const evidence = ear.evidenceFor(event.midis, 2000);
+      const control = ear.evidenceFor([event.midis[0] + 1], 2000);
+      if (!evidence) return "no posteriors";
+      const before = follower.index;
+      const t0 = performance.now();
+      follower.feed({ time: t0, rms: 0, reading: null });
+      follower.feed({ time: t0 + 60, rms: 0, reading: null });
+      for (let ms = 61; ms <= 240; ms += 20) {
+        follower.feed({ time: t0 + ms, rms: 0.06, reading: null, chord: evidence });
+      }
+      return {
+        names: event.names,
+        evidence: evidence.map((c) => `${c.midi}:${c.evidence.toFixed(2)}`),
+        control: control?.map((c) => `${c.midi}:${c.evidence.toFixed(2)}`),
+        requireAllTones: follower.cfg.requireAllTones,
+        advanced: follower.index > before,
+      };
+    };
     (window as any).__jv = {
       hit: (n = 1) => {
         for (let k = 0; k < n; k++) simulate(true);
       },
       miss: () => simulate(false),
       partial: () => simulate(true, "first"),
+      mlTest,
       state: () => ({
         index: followerRef.current?.index,
         total: followerRef.current?.events.length,
@@ -673,8 +746,10 @@ export default function App() {
             🎹 Piano
           </button>
         </div>
-        <button className="iconbtn" title="Zoom out" onClick={() => managerRef.current?.setZoom(-0.15)}>−</button>
-        <button className="iconbtn" title="Zoom in" onClick={() => managerRef.current?.setZoom(0.15)}>+</button>
+        <span className="zoomctl">
+          <button className="iconbtn" title="Zoom out" onClick={() => managerRef.current?.setZoom(-0.15)}>−</button>
+          <button className="iconbtn" title="Zoom in" onClick={() => managerRef.current?.setZoom(0.15)}>+</button>
+        </span>
       </header>
 
       {error && (
@@ -733,6 +808,7 @@ export default function App() {
         <button className="btn" onClick={backNote} disabled={currentIndex === 0}>‹ Back</button>
         <button className="btn" onClick={skipNote} disabled={eventCount === 0 || finished}>Skip ›</button>
         <span className="grow" />
+        <span className="settings">
         <label className="setting">
           tuning
           <select value={a4} onChange={(e) => setA4(Number(e.target.value))}>
@@ -768,6 +844,25 @@ export default function App() {
               onChange={(e) => setFullChords(e.target.checked)}
             />
             full chords
+          </label>
+        )}
+        {mode === "piano" && fullChords && (
+          <label
+            className="setting"
+            title="How chords are verified: the Basic Pitch model (local AI, hears octaves) or the plain spectral comb"
+          >
+            ear
+            <select
+              value={chordEar}
+              onChange={(e) => setChordEar(e.target.value as "ml" | "spectral")}
+            >
+              <option value="ml">
+                AI
+                {chordEar === "ml" && mlState === "loading" && " (loading…)"}
+                {chordEar === "ml" && mlState === "error" && " (failed → spectral)"}
+              </option>
+              <option value="spectral">spectral</option>
+            </select>
           </label>
         )}
         <label className="setting">
@@ -806,6 +901,7 @@ export default function App() {
             </select>
           </label>
         )}
+        </span>
       </section>
 
       <section className="tuner">

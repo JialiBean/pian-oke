@@ -1,6 +1,7 @@
 import { PitchDetector } from "./pitch";
 import { toReading, type PitchReading } from "./noteUtils";
 import { verifyChord, type ChordEvidence } from "./chordVerify";
+import { MlEar, type MlEarState } from "./mlEar";
 
 export interface AudioFrame {
   time: number;
@@ -37,6 +38,11 @@ export class AudioEngine {
   private freqAnalyser: AnalyserNode | null = null;
   private freqBuf: Float32Array | null = null;
   private chordTargets: number[] | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
+  // ML ear (Basic Pitch): created lazily, model kept loaded across restarts.
+  private ml: MlEar | null = null;
+  private chordEarMode: "spectral" | "ml" = "spectral";
+  onMlState?: (state: MlEarState, detail: string) => void;
 
   /**
    * Register the chord tones (MIDI numbers) frames should carry evidence
@@ -45,6 +51,33 @@ export class AudioEngine {
    */
   setChordTargets(midis: number[] | null) {
     this.chordTargets = midis && midis.length > 0 ? [...midis] : null;
+  }
+
+  /**
+   * Choose the polyphonic evidence source. "ml" preloads Basic Pitch and
+   * taps the mic stream; while the model is loading (or its result is
+   * stale) frames silently carry spectral-comb evidence instead.
+   */
+  setChordEar(mode: "spectral" | "ml") {
+    if (mode === this.chordEarMode) return;
+    this.chordEarMode = mode;
+    if (mode === "ml") {
+      void this.ensureMl().load();
+      if (this.running && this.ctx && this.source) {
+        void this.ml!.attach(this.ctx, this.source);
+      }
+    } else {
+      this.ml?.detach();
+    }
+  }
+
+  /** The ML ear instance (created on demand) — also used by dev hooks. */
+  ensureMl(): MlEar {
+    if (!this.ml) {
+      this.ml = new MlEar();
+      this.ml.onState = (s, d) => this.onMlState?.(s, d);
+    }
+    return this.ml;
   }
 
   /** List available microphones (labels appear once permission is granted). */
@@ -72,6 +105,12 @@ export class AudioEngine {
     this.ctx = new AudioContext();
     if (this.ctx.state === "suspended") await this.ctx.resume();
     const source = this.ctx.createMediaStreamSource(this.stream);
+    this.source = source;
+    if (this.chordEarMode === "ml") {
+      const ml = this.ensureMl();
+      void ml.load();
+      void ml.attach(this.ctx, source);
+    }
     this.analyser = this.ctx.createAnalyser();
     // 4096 samples (~85 ms at 48 kHz) so low notes get enough periods.
     this.analyser.fftSize = 4096;
@@ -112,12 +151,19 @@ export class AudioEngine {
     let chord: ChordEvidence[] | null = null;
     const targets = this.chordTargets;
     if (targets && this.freqAnalyser && this.freqBuf && this.ctx) {
-      this.freqAnalyser.getFloatFrequencyData(this.freqBuf);
-      chord = verifyChord(this.freqBuf, targets, {
-        sampleRate: this.ctx.sampleRate,
-        fftSize: this.freqAnalyser.fftSize,
-        a4: this.a4,
-      });
+      if (this.chordEarMode === "ml" && this.ml?.state === "ready") {
+        chord = this.ml.evidenceFor(targets);
+      }
+      if (!chord) {
+        // Spectral comb: primary in "spectral" mode, fallback while the
+        // model loads or its latest result has gone stale.
+        this.freqAnalyser.getFloatFrequencyData(this.freqBuf);
+        chord = verifyChord(this.freqBuf, targets, {
+          sampleRate: this.ctx.sampleRate,
+          fftSize: this.freqAnalyser.fftSize,
+          a4: this.a4,
+        });
+      }
     }
     this.onFrame?.({ time: performance.now(), rms, reading, chord });
   }
@@ -128,6 +174,8 @@ export class AudioEngine {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     void this.ctx?.close().catch(() => undefined);
+    this.ml?.detach();
+    this.source = null;
     this.ctx = null;
     this.analyser = null;
     this.detector = null;

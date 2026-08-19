@@ -367,3 +367,68 @@ select {
 .pdfcard .banner { margin: 0 0 10px; }
 .pdfactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pdfnote { font-size: 12px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; }
+
+/* ---------- Mobile ---------- */
+
+.zoomctl { display: inline-flex; gap: 8px; }
+/* Desktop: the wrapper is layout-transparent — settings flow in .controls
+ * exactly as before. Phones swap it to one thumb-scrollable row. */
+.settings { display: contents; }
+
+button, select, input { touch-action: manipulation; }
+.btn, .iconbtn, .modeswitch button { -webkit-tap-highlight-color: transparent; user-select: none; }
+
+@media (max-width: 720px) {
+  .app {
+    min-width: 0;
+    /* Keep controls clear of the notch and the home indicator. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 4px;
+  }
+  .header h1 { font-size: 17px; }
+  .banner { margin: 0 12px 8px; }
+  .controls { padding: 0 12px 8px; gap: 6px; }
+  .settings {
+    display: flex;
+    flex: 1 0 100%;
+    align-items: center;
+    gap: 10px;
+    overflow-x: auto;
+    padding: 2px 0 6px;
+    scrollbar-width: none;
+  }
+  .settings::-webkit-scrollbar { display: none; }
+  .settings .setting { flex: 0 0 auto; }
+  .tuner {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 0 12px 8px;
+  }
+  .panel { min-height: 76px; padding: 8px 12px; }
+  .panel .value { font-size: 22px; }
+  .sheetWrap { margin: 0 12px 10px; padding: 8px 10px 22px; }
+  .overlay .card { margin: 0 16px; padding: 22px 24px 24px; }
+}
+
+@media (max-width: 460px) {
+  .header .sub { display: none; }
+  .tuner { grid-template-columns: 1fr 1fr; }
+}
+
+/* Finger-sized targets wherever the primary pointer is a touch screen. */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; padding: 9px 14px; }
+  /* iOS Safari zooms the page when focusing controls below 16px. */
+  select { min-height: 44px; font-size: 16px; }
+  .setting select { min-height: 38px; font-size: 14px; }
+  .setting.checkbox input { width: 18px; height: 18px; }
+  .iconbtn { width: 40px; height: 40px; }
+  .modeswitch button { padding: 10px 14px; }
+  .linkbtn { padding: 10px 6px; }
+}
