@@ -184,6 +184,18 @@ export function sanitizeOmrXml(xml: string): string {
     }
   }
 
+  // Part labels come out garbled too ("3rand Piano") or defaulted ("Voice");
+  // blank both the name and the per-system abbreviation — the injected title
+  // identifies the piece.
+  for (const tag of ["part-name", "part-abbreviation"]) {
+    for (const el of Array.from(doc.getElementsByTagName(tag))) {
+      if ((el.textContent ?? "").trim()) {
+        el.textContent = "";
+        changed = true;
+      }
+    }
+  }
+
   // Rests sometimes carry display-step/display-octave placement hints, which
   // some renderers mis-parse into phantom pitched notes. The hints are purely
   // cosmetic — drop them.

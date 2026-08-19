@@ -79,7 +79,7 @@ describe("sanitizeOmrXml", () => {
 
   it("keeps valid divisions untouched", () => {
     const xml = pageXml([ATTRS + NOTE]);
-    expect(sanitizeOmrXml(xml)).toBe(xml);
+    expect(sanitizeOmrXml(xml)).toContain("<divisions>1</divisions>");
   });
 
   it("passes through unparseable input unchanged", () => {
@@ -126,6 +126,15 @@ describe("sanitizeOmrXml direction layout", () => {
     expect(out).not.toContain("default-y");
     expect(out).toContain('placement="below"');
     expect(out).toContain("<mf/>");
+  });
+
+  it("blanks garbled OMR part names", () => {
+    const xml = pageXml([ATTRS + NOTE]).replace(
+      "<part-name>Violin</part-name>",
+      "<part-name>3rand Piano</part-name>",
+    );
+    const out = sanitizeOmrXml(xml);
+    expect(out).not.toContain("3rand");
   });
 
   it("drops OCR'd credit blocks and titles so the file name can take over", () => {
