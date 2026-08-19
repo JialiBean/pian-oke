@@ -155,6 +155,14 @@ on each note and advances only when the correct pitch is played.
   Web Audio); mic needs NSMicrophoneUsageDescription; PDF transcription would
   call providers directly with a key stored in the iOS Keychain (no local
   Node proxy on device), or scores get imported on desktop and synced.
+  BLOCKED on this Mac (2026-08-19): only CommandLineTools present — no
+  full Xcode, no simulators, no CocoaPods. Once Xcode is installed and
+  `sudo xcode-select -s /Applications/Xcode.app` run, the wrap is:
+  `npm i @capacitor/{core,cli,ios} && npx cap init violin-oke
+  studio.jiali.violinoke --web-dir dist && npx cap add ios && npm run build
+  && npx cap sync`, then add NSMicrophoneUsageDescription to
+  ios/App/App/Info.plist. Meanwhile the phone path that works today:
+  `npm run dev:phone` → https://<mac-ip>:5173, or Add to Home Screen (PWA).
 
 - OMR expression placement: Audiveris's mp/mf values and hairpin (cresc/dim
   wedge) extents are sometimes wrong or misaligned — classifier-level, not
