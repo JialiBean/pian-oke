@@ -3,3 +3,11 @@ dist
 *.log
 .DS_Store
 .env
+
+# generated into the iOS project by `npx cap sync ios`
+ios/App/App/public/
+ios/App/App/capacitor.config.json
+
+# Xcode local state
+ios/**/xcuserdata/
+ios/**/DerivedData/

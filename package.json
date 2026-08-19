@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@spotify/basic-pitch": "^1.0.1",
     "opensheetmusicdisplay": "^1.8.4",
     "pdfjs-dist": "^4.10.38",
@@ -19,6 +21,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-basic-ssl": "^2.3.0",

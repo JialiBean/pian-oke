@@ -76,6 +76,21 @@ function levelPercent(rms: number): number {
   return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
 }
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+// Landscape phone (the iOS app is locked to landscape): the layout centers on
+// the sheet — one slim toolbar, everything else in the settings drawer.
+const COMPACT_MQ = "(pointer: coarse) and (max-height: 520px)";
+
 export default function App() {
   const sheetRef = useRef<HTMLDivElement>(null);
   const managerRef = useRef<ScoreManager | null>(null);
@@ -155,6 +170,8 @@ export default function App() {
       return "";
     }
   });
+  const compact = useMediaQuery(COMPACT_MQ);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   function colorFor(result: EventResult): string | null {
     if (result === "pending") return null;
@@ -715,9 +732,164 @@ export default function App() {
   const accuracy = done > 0 ? Math.round((100 * firstTry) / done) : 100;
   const skipped = results.filter((r) => r === "skipped").length;
 
+  // Shared controls, rendered either inline (desktop) or in the settings
+  // drawer (compact) — never both at once.
+  const scoreSelect = (
+    <select
+      value={sample}
+      onChange={(e) => {
+        const v = e.target.value;
+        setSample(v);
+        if (v.startsWith("lib:")) loadLibraryScore(v.slice(4));
+        else if (v) void loadSampleById(v);
+      }}
+    >
+      {sample === "" && <option value="">(unsaved)</option>}
+      <optgroup label="Samples">
+        {SAMPLES.map((s) => (
+          <option key={s.id} value={s.id}>{s.label}</option>
+        ))}
+      </optgroup>
+      {library.length > 0 && (
+        <optgroup label="Imported">
+          {library.map((e) => (
+            <option key={e.id} value={`lib:${e.id}`}>{e.title}</option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+
+  const openFileBtn = (
+    <label className="btn">
+      Open file…
+      <input
+        type="file"
+        accept=".xml,.musicxml,.mxl,.pdf"
+        onChange={onFileChosen}
+        style={{ display: "none" }}
+      />
+    </label>
+  );
+
+  const modeSwitch = (
+    <div className="modeswitch">
+      <button className={mode === "violin" ? "on" : ""} onClick={() => switchMode("violin")}>
+        🎻 Violin
+      </button>
+      <button className={mode === "piano" ? "on" : ""} onClick={() => switchMode("piano")}>
+        🎹 Piano
+      </button>
+    </div>
+  );
+
+  const zoomCtl = (
+    <span className="zoomctl">
+      <button className="iconbtn" title="Zoom out" onClick={() => managerRef.current?.setZoom(-0.15)}>−</button>
+      <button className="iconbtn" title="Zoom in" onClick={() => managerRef.current?.setZoom(0.15)}>+</button>
+    </span>
+  );
+
+  const settingRows = (
+    <>
+      <label className="setting">
+        tuning
+        <select value={a4} onChange={(e) => setA4(Number(e.target.value))}>
+          <option value={440}>A = 440</option>
+          <option value={441}>A = 441</option>
+          <option value={442}>A = 442</option>
+        </select>
+      </label>
+      <label className="setting">
+        tolerance
+        <select value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))}>
+          <option value={10}>precise ±10¢</option>
+          <option value={30}>strict ±30¢</option>
+          <option value={50}>normal ±50¢</option>
+        </select>
+      </label>
+      <label className="setting checkbox">
+        <input
+          type="checkbox"
+          checked={showMistakes}
+          onChange={(e) => setShowMistakes(e.target.checked)}
+        />
+        mistakes
+      </label>
+      {mode === "piano" && (
+        <label
+          className="setting checkbox"
+          title="Require every written chord tone before advancing (not just one)"
+        >
+          <input
+            type="checkbox"
+            checked={fullChords}
+            onChange={(e) => setFullChords(e.target.checked)}
+          />
+          full chords
+        </label>
+      )}
+      {mode === "piano" && fullChords && (
+        <label
+          className="setting"
+          title="How chords are verified: the Basic Pitch model (local AI, hears octaves) or the plain spectral comb"
+        >
+          ear
+          <select
+            value={chordEar}
+            onChange={(e) => setChordEar(e.target.value as "ml" | "spectral")}
+          >
+            <option value="ml">
+              AI
+              {chordEar === "ml" && mlState === "loading" && " (loading…)"}
+              {chordEar === "ml" && mlState === "error" && " (failed → spectral)"}
+            </option>
+            <option value="spectral">spectral</option>
+          </select>
+        </label>
+      )}
+      <label className="setting">
+        speed
+        <select
+          value={tempoFactor}
+          onChange={(e) => {
+            stopPlayback();
+            setTempoFactor(Number(e.target.value));
+          }}
+        >
+          <option value={0.5}>50%</option>
+          <option value={0.75}>75%</option>
+          <option value={1}>100%</option>
+          <option value={1.25}>125%</option>
+        </select>
+      </label>
+      <label className="setting">
+        mic
+        <select value={sensitivity} onChange={(e) => setSensitivity(e.target.value)}>
+          <option value="low">quiet room</option>
+          <option value="med">normal</option>
+          <option value="high">sensitive</option>
+        </select>
+      </label>
+      {micInputs.length > 0 && (
+        <label className="setting">
+          input
+          <select value={micDevice} onChange={(e) => void pickMicDevice(e.target.value)}>
+            <option value="">Default</option>
+            {micInputs.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </>
+  );
+
   return (
     <div
-      className={`app ${dragOver ? "dragover" : ""}`}
+      className={`app ${compact ? "compact" : ""} ${dragOver ? "dragover" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -732,25 +904,81 @@ export default function App() {
         if (file) void importFile(file);
       }}
     >
-      <header className="header">
-        <h1>{MODES[mode].name}</h1>
-        <span className="sub">
-          {scoreTitle || "sheet-music karaoke — play the note to advance"}
-        </span>
-        <span className="grow" />
-        <div className="modeswitch">
-          <button className={mode === "violin" ? "on" : ""} onClick={() => switchMode("violin")}>
-            🎻 Violin
+      {!compact && (
+        <header className="header">
+          <h1>{MODES[mode].name}</h1>
+          <span className="sub">
+            {scoreTitle || "sheet-music karaoke — play the note to advance"}
+          </span>
+          <span className="grow" />
+          {modeSwitch}
+          {zoomCtl}
+        </header>
+      )}
+
+      {compact && (
+        <div className="cbar">
+          <button
+            className="iconbtn gear"
+            aria-label="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            ⚙
           </button>
-          <button className={mode === "piano" ? "on" : ""} onClick={() => switchMode("piano")}>
-            🎹 Piano
+          {!listening ? (
+            <button className="btn primary" onClick={() => void startListening()}>
+              ● Start
+            </button>
+          ) : (
+            <button className="btn listening" onClick={stopListening}>
+              ■ Stop
+            </button>
+          )}
+          <button
+            className="btn"
+            title={playing ? "Stop playback" : "Play the score"}
+            onClick={togglePlayback}
+            disabled={eventCount === 0}
+          >
+            {playing ? "■" : "▶"}
           </button>
+          <button className="btn" title="Back one note" onClick={backNote} disabled={currentIndex === 0}>‹</button>
+          <button className="btn" title="Skip this note" onClick={skipNote} disabled={eventCount === 0 || finished}>›</button>
+          <div className="cstat">
+            <div className="clabel">next{target && ` · m${target.measure}`}</div>
+            <div className="cvalue target">
+              {finished ? "🎉" : target ? target.names.join("+") : "—"}
+            </div>
+          </div>
+          <div className="cstat">
+            <div className="clabel">heard</div>
+            <div className="cvalue" ref={noteEl}>–</div>
+          </div>
+          <div className="cneedle">
+            <div className="needle-track">
+              <div
+                className="zone"
+                style={{ left: `${50 - tolerance}%`, width: `${tolerance * 2}%` }}
+              />
+              <div className="center-tick" />
+              <div className="needle" ref={needleEl} />
+            </div>
+            <div className="ccents" ref={centsEl} />
+          </div>
+          <div className="cstat cmic">
+            <div className="clabel">{listening ? "mic" : "mic off"}</div>
+            <div className="level-track">
+              <div className="level-fill" ref={levelEl} />
+            </div>
+          </div>
+          <div className="cstat">
+            <div className="clabel">progress</div>
+            <div className="cvalue">
+              {Math.min(currentIndex, eventCount)}<span className="dim">/{eventCount}</span>
+            </div>
+          </div>
         </div>
-        <span className="zoomctl">
-          <button className="iconbtn" title="Zoom out" onClick={() => managerRef.current?.setZoom(-0.15)}>−</button>
-          <button className="iconbtn" title="Zoom in" onClick={() => managerRef.current?.setZoom(0.15)}>+</button>
-        </span>
-      </header>
+      )}
 
       {error && (
         <div className="banner">
@@ -759,203 +987,86 @@ export default function App() {
         </div>
       )}
 
-      <section className="controls">
-        <select
-          value={sample}
-          onChange={(e) => {
-            const v = e.target.value;
-            setSample(v);
-            if (v.startsWith("lib:")) loadLibraryScore(v.slice(4));
-            else if (v) void loadSampleById(v);
-          }}
-        >
-          {sample === "" && <option value="">(unsaved)</option>}
-          <optgroup label="Samples">
-            {SAMPLES.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </optgroup>
-          {library.length > 0 && (
-            <optgroup label="Imported">
-              {library.map((e) => (
-                <option key={e.id} value={`lib:${e.id}`}>{e.title}</option>
-              ))}
-            </optgroup>
+      {!compact && (
+        <section className="controls">
+          {scoreSelect}
+          {openFileBtn}
+          {!listening ? (
+            <button className="btn primary" onClick={() => void startListening()}>
+              ● Start listening
+            </button>
+          ) : (
+            <button className="btn listening" onClick={stopListening}>
+              ■ Stop
+            </button>
           )}
-        </select>
-        <label className="btn">
-          Open file…
-          <input
-            type="file"
-            accept=".xml,.musicxml,.mxl,.pdf"
-            onChange={onFileChosen}
-            style={{ display: "none" }}
-          />
-        </label>
-        {!listening ? (
-          <button className="btn primary" onClick={() => void startListening()}>
-            ● Start listening
+          <button className="btn" onClick={togglePlayback} disabled={eventCount === 0}>
+            {playing ? "■ Stop playback" : "▶ Play"}
           </button>
-        ) : (
-          <button className="btn listening" onClick={stopListening}>
-            ■ Stop
-          </button>
-        )}
-        <button className="btn" onClick={togglePlayback} disabled={eventCount === 0}>
-          {playing ? "■ Stop playback" : "▶ Play"}
-        </button>
-        <button className="btn" onClick={restart} disabled={eventCount === 0}>↺ Restart</button>
-        <button className="btn" onClick={backNote} disabled={currentIndex === 0}>‹ Back</button>
-        <button className="btn" onClick={skipNote} disabled={eventCount === 0 || finished}>Skip ›</button>
-        <span className="grow" />
-        <span className="settings">
-        <label className="setting">
-          tuning
-          <select value={a4} onChange={(e) => setA4(Number(e.target.value))}>
-            <option value={440}>A = 440</option>
-            <option value={441}>A = 441</option>
-            <option value={442}>A = 442</option>
-          </select>
-        </label>
-        <label className="setting">
-          tolerance
-          <select value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))}>
-            <option value={10}>precise ±10¢</option>
-            <option value={30}>strict ±30¢</option>
-            <option value={50}>normal ±50¢</option>
-          </select>
-        </label>
-        <label className="setting checkbox">
-          <input
-            type="checkbox"
-            checked={showMistakes}
-            onChange={(e) => setShowMistakes(e.target.checked)}
-          />
-          mistakes
-        </label>
-        {mode === "piano" && (
-          <label
-            className="setting checkbox"
-            title="Require every written chord tone before advancing (not just one)"
-          >
-            <input
-              type="checkbox"
-              checked={fullChords}
-              onChange={(e) => setFullChords(e.target.checked)}
-            />
-            full chords
-          </label>
-        )}
-        {mode === "piano" && fullChords && (
-          <label
-            className="setting"
-            title="How chords are verified: the Basic Pitch model (local AI, hears octaves) or the plain spectral comb"
-          >
-            ear
-            <select
-              value={chordEar}
-              onChange={(e) => setChordEar(e.target.value as "ml" | "spectral")}
-            >
-              <option value="ml">
-                AI
-                {chordEar === "ml" && mlState === "loading" && " (loading…)"}
-                {chordEar === "ml" && mlState === "error" && " (failed → spectral)"}
-              </option>
-              <option value="spectral">spectral</option>
-            </select>
-          </label>
-        )}
-        <label className="setting">
-          speed
-          <select
-            value={tempoFactor}
-            onChange={(e) => {
-              stopPlayback();
-              setTempoFactor(Number(e.target.value));
-            }}
-          >
-            <option value={0.5}>50%</option>
-            <option value={0.75}>75%</option>
-            <option value={1}>100%</option>
-            <option value={1.25}>125%</option>
-          </select>
-        </label>
-        <label className="setting">
-          mic
-          <select value={sensitivity} onChange={(e) => setSensitivity(e.target.value)}>
-            <option value="low">quiet room</option>
-            <option value="med">normal</option>
-            <option value="high">sensitive</option>
-          </select>
-        </label>
-        {micInputs.length > 0 && (
-          <label className="setting">
-            input
-            <select value={micDevice} onChange={(e) => void pickMicDevice(e.target.value)}>
-              <option value="">Default</option>
-              {micInputs.map((d) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        </span>
-      </section>
+          <button className="btn" onClick={restart} disabled={eventCount === 0}>↺ Restart</button>
+          <button className="btn" onClick={backNote} disabled={currentIndex === 0}>‹ Back</button>
+          <button className="btn" onClick={skipNote} disabled={eventCount === 0 || finished}>Skip ›</button>
+          <span className="grow" />
+          <span className="settings">{settingRows}</span>
+        </section>
+      )}
 
-      <section className="tuner">
-        <div className="panel">
-          <div className="label">next note {target && `· measure ${target.measure}`}</div>
-          <div className="value target">
-            {finished ? "🎉" : target ? target.names.join(" + ") : "—"}
+      {!compact && (
+        <section className="tuner">
+          <div className="panel">
+            <div className="label">next note {target && `· measure ${target.measure}`}</div>
+            <div className="value target">
+              {finished ? "🎉" : target ? target.names.join(" + ") : "—"}
+            </div>
+            <div className="hint">
+              {finished
+                ? "score complete"
+                : listening
+                  ? "listening…"
+                  : "press start listening, then play"}
+            </div>
           </div>
-          <div className="hint">
-            {finished
-              ? "score complete"
-              : listening
-                ? "listening…"
-                : "press start listening, then play"}
+          <div className="panel">
+            <div className="label">
+              hearing {wrongMsg && <em className="wrong">{wrongMsg}</em>}
+            </div>
+            <div className="value" ref={noteEl}>–</div>
+            <div className="needle-track">
+              <div
+                className="zone"
+                style={{ left: `${50 - tolerance}%`, width: `${tolerance * 2}%` }}
+              />
+              <div className="center-tick" />
+              <div className="needle" ref={needleEl} />
+            </div>
+            <div className="cents" ref={centsEl} />
           </div>
-        </div>
-        <div className="panel">
-          <div className="label">
-            hearing {wrongMsg && <em className="wrong">{wrongMsg}</em>}
+          <div className="panel">
+            <div className="label">mic level</div>
+            <div className="level-track">
+              <div className="level-fill" ref={levelEl} />
+            </div>
+            <div className="hint">{listening ? "live" : "mic off"}</div>
           </div>
-          <div className="value" ref={noteEl}>–</div>
-          <div className="needle-track">
-            <div
-              className="zone"
-              style={{ left: `${50 - tolerance}%`, width: `${tolerance * 2}%` }}
-            />
-            <div className="center-tick" />
-            <div className="needle" ref={needleEl} />
+          <div className="panel">
+            <div className="label">progress</div>
+            <div className="value">
+              {Math.min(currentIndex, eventCount)}<span className="dim">/{eventCount}</span>
+            </div>
+            <div className="progress-track">
+              <div
+                className="progress-fill"
+                style={{ width: eventCount ? `${(100 * currentIndex) / eventCount}%` : 0 }}
+              />
+            </div>
+            <div className="hint">
+              {accuracy}% first try · {wrongCount} slips{skipped > 0 && ` · ${skipped} skipped`}
+            </div>
           </div>
-          <div className="cents" ref={centsEl} />
-        </div>
-        <div className="panel">
-          <div className="label">mic level</div>
-          <div className="level-track">
-            <div className="level-fill" ref={levelEl} />
-          </div>
-          <div className="hint">{listening ? "live" : "mic off"}</div>
-        </div>
-        <div className="panel">
-          <div className="label">progress</div>
-          <div className="value">
-            {Math.min(currentIndex, eventCount)}<span className="dim">/{eventCount}</span>
-          </div>
-          <div className="progress-track">
-            <div
-              className="progress-fill"
-              style={{ width: eventCount ? `${(100 * currentIndex) / eventCount}%` : 0 }}
-            />
-          </div>
-          <div className="hint">
-            {accuracy}% first try · {wrongCount} slips{skipped > 0 && ` · ${skipped} skipped`}
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
+
+      {compact && wrongMsg && <div className="ctoast">{wrongMsg}</div>}
 
       <section className="sheetWrap">
         {loadingScore && <div className="loading">Loading score…</div>}
@@ -973,6 +1084,49 @@ export default function App() {
             void applyScore(content, title);
           }}
         />
+      )}
+
+      {compact && settingsOpen && (
+        <div
+          className="drawerback"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSettingsOpen(false);
+          }}
+        >
+          <aside className="drawer">
+            <div className="drawerhead">
+              <h2>Settings</h2>
+              <button
+                className="iconbtn"
+                aria-label="Close settings"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="dgroup">
+              <div className="dtitle">Score</div>
+              {scoreSelect}
+              <div className="drow2">
+                {openFileBtn}
+                <button className="btn" onClick={restart} disabled={eventCount === 0}>
+                  ↺ Restart
+                </button>
+              </div>
+            </div>
+            <div className="dgroup">
+              <div className="dtitle">Instrument</div>
+              <div className="drow2">
+                {modeSwitch}
+                {zoomCtl}
+              </div>
+            </div>
+            <div className="dgroup">
+              <div className="dtitle">Practice</div>
+              <div className="drows">{settingRows}</div>
+            </div>
+          </aside>
+        </div>
       )}
 
       {finished && (
