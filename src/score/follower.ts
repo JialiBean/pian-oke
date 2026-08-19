@@ -16,6 +16,17 @@ export interface FollowerConfig {
   rearmSilenceMs: number;
   /** RMS jump factor over the recent floor that counts as a new bow attack. */
   onsetRatio: number;
+  /**
+   * Piano mode: require spectral evidence for EVERY written chord tone (not
+   * just any one) before a 2+ note event can match. Needs frames that carry
+   * chord evidence (AudioEngine.setChordTargets); frames without it fall
+   * back to any-tone matching so the app degrades gracefully.
+   */
+  requireAllTones: boolean;
+  /** Minimum per-tone evidence (0..1) to count a chord tone as heard. */
+  evidenceMin: number;
+  /** Every chord tone must have been heard within this rolling window. */
+  chordWindowMs: number;
 }
 
 export interface FollowerCallbacks {
@@ -40,6 +51,9 @@ export class Follower {
     rmsMin: 0.0035,
     rearmSilenceMs: 45,
     onsetRatio: 2.5,
+    requireAllTones: false,
+    evidenceMin: 0.5,
+    chordWindowMs: 400,
   };
 
   events: NoteEvent[] = [];
@@ -55,6 +69,10 @@ export class Follower {
   private armed = true;
   private lastMatched: number[] = [];
   private rmsLog: Array<{ t: number; rms: number }> = [];
+  /** Per chord tone: when its evidence last crossed evidenceMin. */
+  private toneSeen = new Map<number, number>();
+  /** Last articulation (RMS attack or return from a silence gap). */
+  private lastOnset = -1;
 
   constructor(private readonly cb: FollowerCallbacks) {}
 
@@ -66,6 +84,7 @@ export class Follower {
     this.armed = true;
     this.lastMatched = [];
     this.rmsLog = [];
+    this.lastOnset = -1;
   }
 
   private resetNoteState() {
@@ -75,6 +94,7 @@ export class Follower {
     this.wrongReported = false;
     this.hadWrong = false;
     this.silenceStart = -1;
+    this.toneSeen.clear();
   }
 
   feed(frame: AudioFrame) {
@@ -88,7 +108,15 @@ export class Follower {
 
     const event = this.events[this.index];
     const r = frame.reading;
-    const silent = !r || frame.rms < cfg.rmsMin || r.clarity < cfg.clarityMin;
+    // Full-chord verification only for 2+ note events on frames that carry
+    // evidence; everything else takes the monophonic path unchanged. A chord
+    // frame counts as sounding on RMS alone — McLeod clarity collapses on
+    // polyphony, and that must not read as silence.
+    const chordMode =
+      cfg.requireAllTones && event.midis.length >= 2 && frame.chord != null;
+    const readingOk = r != null && r.clarity >= cfg.clarityMin;
+    const silent =
+      frame.rms < cfg.rmsMin || (!chordMode && !readingOk);
 
     if (silent) {
       this.hitStart = -1;
@@ -101,24 +129,40 @@ export class Follower {
       }
       return;
     }
+    if (this.silenceStart >= 0 && frame.time - this.silenceStart >= cfg.rearmSilenceMs) {
+      // Sound resuming after a real gap is an articulation too.
+      this.lastOnset = frame.time;
+    }
     this.silenceStart = -1;
 
-    if (this.isOnset(frame)) this.armed = true;
+    if (this.isOnset(frame)) {
+      this.armed = true;
+      this.lastOnset = frame.time;
+    }
 
     if (!this.armed) {
-      const stillPrevious = this.lastMatched.some(
-        (m) => Math.abs(r.midiFloat - m) < 0.5,
-      );
-      if (stillPrevious) {
+      // Without a trustworthy reading we cannot tell the previous note's
+      // ring-down from a new one — stay disarmed until an onset or gap.
+      const stillPrevious = r
+        ? this.lastMatched.some((m) => Math.abs(r.midiFloat - m) < 0.5)
+        : true;
+      if (stillPrevious || !readingOk) {
         this.hitStart = -1;
         return;
       }
       this.armed = true;
     }
 
-    const hit = event.midis.some(
-      (m) => Math.abs(r.midiFloat - m) * 100 <= cfg.centsTol,
-    );
+    const monoHit =
+      readingOk &&
+      event.midis.some((m) => Math.abs(r!.midiFloat - m) * 100 <= cfg.centsTol);
+    let hit: boolean;
+    if (chordMode) {
+      this.recordEvidence(event, frame);
+      hit = this.allTonesHeard(event, frame.time);
+    } else {
+      hit = monoHit;
+    }
 
     if (hit) {
       this.wrongStart = -1;
@@ -128,8 +172,15 @@ export class Follower {
       if (frame.time - this.hitStart >= cfg.holdMs) this.advance();
     } else {
       this.hitStart = -1;
-      if (this.wrongMidi !== r.midi) {
-        this.wrongMidi = r.midi;
+      // Wrong-note reporting stays monophonic: only a trustworthy reading
+      // that matches NO chord tone counts as wrong. A correct-but-incomplete
+      // chord keeps waiting silently.
+      if (!readingOk || monoHit) {
+        this.wrongStart = -1;
+        this.wrongMidi = null;
+        this.wrongReported = false;
+      } else if (this.wrongMidi !== r!.midi) {
+        this.wrongMidi = r!.midi;
         this.wrongStart = frame.time;
         this.wrongReported = false;
       } else if (
@@ -138,9 +189,34 @@ export class Follower {
       ) {
         this.wrongReported = true;
         this.hadWrong = true;
-        this.cb.onWrong(this.index, r.midi);
+        this.cb.onWrong(this.index, r!.midi);
       }
     }
+  }
+
+  /**
+   * Note down which expected tones the spectrum currently supports. A
+   * degenerate tone (octave doubling — spectrally inseparable from a lower
+   * chord tone) additionally needs a recent articulation: the optimistic
+   * spectral credit alone must not let a ringing lower note vouch for it.
+   */
+  private recordEvidence(event: NoteEvent, frame: AudioFrame) {
+    for (const c of frame.chord!) {
+      if (!event.midis.includes(c.midi)) continue; // stale target set
+      if (c.evidence < this.cfg.evidenceMin) continue;
+      const onsetRecent =
+        this.lastOnset >= 0 &&
+        frame.time - this.lastOnset <= this.cfg.chordWindowMs;
+      if (c.degenerate && !onsetRecent) continue;
+      this.toneSeen.set(c.midi, frame.time);
+    }
+  }
+
+  /** Every written tone heard within the rolling window (not necessarily
+   * in the same frame — arpeggiated/rolled chords are fine). */
+  private allTonesHeard(event: NoteEvent, now: number): boolean {
+    const cutoff = now - this.cfg.chordWindowMs;
+    return event.midis.every((m) => (this.toneSeen.get(m) ?? -Infinity) >= cutoff);
   }
 
   private isOnset(frame: AudioFrame): boolean {

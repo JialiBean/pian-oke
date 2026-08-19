@@ -4,17 +4,21 @@ import type { NoteEvent } from "./types";
 import type { AudioFrame } from "../audio/engine";
 import { midiToFreq, midiToName, toReading } from "../audio/noteUtils";
 
-function makeEvents(midis: number[]): NoteEvent[] {
-  return midis.map((m, i) => ({
+function makeChordEvents(chords: number[][]): NoteEvent[] {
+  return chords.map((midis, i) => ({
     index: i,
     stepIndex: i,
-    midis: [m],
-    names: [midiToName(m)],
+    midis,
+    names: midis.map(midiToName),
     measure: 1,
     timestamp: i * 0.25,
     duration: 0.25,
     sourceNotes: [],
   }));
+}
+
+function makeEvents(midis: number[]): NoteEvent[] {
+  return makeChordEvents(midis.map((m) => [m]));
 }
 
 function loud(t: number, midi: number, rms = 0.05): AudioFrame {
@@ -23,6 +27,28 @@ function loud(t: number, midi: number, rms = 0.05): AudioFrame {
 
 function silent(t: number): AudioFrame {
   return { time: t, rms: 0.0001, reading: null };
+}
+
+/**
+ * A polyphonic frame: evidence per MIDI as [midi, evidence] pairs (or just a
+ * midi for full evidence), an optional monophonic reading, degenerate flags.
+ */
+function chordFrame(
+  t: number,
+  evidence: Array<[number, number] | number>,
+  opts: { read?: number | null; rms?: number; degenerate?: number[] } = {},
+): AudioFrame {
+  const rms = opts.rms ?? 0.05;
+  const read = opts.read;
+  return {
+    time: t,
+    rms,
+    reading: read == null ? null : toReading(midiToFreq(read), 0.97, rms),
+    chord: evidence.map((e) => {
+      const [midi, ev] = Array.isArray(e) ? e : [e, 0.9];
+      return { midi, evidence: ev, degenerate: opts.degenerate?.includes(midi) ?? false };
+    }),
+  };
 }
 
 describe("Follower (wait-mode karaoke)", () => {
@@ -157,5 +183,118 @@ describe("Follower (wait-mode karaoke)", () => {
     expect(follower.back()).toBe(0);
     expect(follower.index).toBe(0);
     expect(follower.back()).toBeNull();
+  });
+
+  describe("requireAllTones (piano full-chord mode)", () => {
+    const CEG = [60, 64, 67];
+
+    beforeEach(() => {
+      follower.cfg.requireAllTones = true;
+    });
+
+    it("stays on any-tone matching while the flag is off", () => {
+      follower.cfg.requireAllTones = false;
+      follower.start(makeChordEvents([CEG]));
+      // Even with evidence for just one tone, the monophonic reading rules.
+      follower.feed(chordFrame(0, [60], { read: 60 }));
+      follower.feed(chordFrame(80, [60], { read: 60 }));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("advances only after every chord tone shows evidence", () => {
+      follower.start(makeChordEvents([CEG]));
+      for (let t = 0; t <= 300; t += 30) {
+        follower.feed(chordFrame(t, [60, 64, [67, 0.2]], { read: 60 }));
+      }
+      expect(matched).toHaveLength(0); // G missing: no advance...
+      expect(wrong).toHaveLength(0); // ...and C4 in hand is not "wrong"
+      follower.feed(chordFrame(330, CEG, { read: 60 }));
+      follower.feed(chordFrame(400, CEG, { read: 60 }));
+      expect(matched).toEqual([{ i: 0, firstTry: true }]);
+    });
+
+    it("collects tones arriving in different frames (rolled chord)", () => {
+      follower.start(makeChordEvents([CEG]));
+      follower.feed(chordFrame(0, [60], { read: 60 }));
+      follower.feed(chordFrame(100, [64], { read: 64 }));
+      follower.feed(chordFrame(200, [67], { read: 67 }));
+      expect(matched).toHaveLength(0); // window satisfied, hold not yet
+      follower.feed(chordFrame(230, [67], { read: 67 }));
+      follower.feed(chordFrame(270, [67], { read: 67 }));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("expires evidence older than the rolling window", () => {
+      follower.start(makeChordEvents([CEG]));
+      follower.feed(chordFrame(0, [60], { read: 60 }));
+      for (let t = 450; t <= 900; t += 50) {
+        follower.feed(chordFrame(t, [64, 67], { read: 64 }));
+      }
+      expect(matched).toHaveLength(0); // C evidence expired before E+G came
+      follower.feed(chordFrame(920, CEG, { read: 60 }));
+      follower.feed(chordFrame(990, CEG, { read: 60 }));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("works without a usable monophonic reading (polyphonic mush)", () => {
+      follower.start(makeChordEvents([CEG]));
+      follower.feed(chordFrame(0, CEG, { read: null }));
+      follower.feed(chordFrame(80, CEG, { read: null }));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("reports a wrong note from the monophonic reading only", () => {
+      follower.start(makeChordEvents([CEG]));
+      // Player holds D4 instead: no advance, and the wrong note is reported.
+      for (let t = 0; t <= 200; t += 30) {
+        follower.feed(chordFrame(t, [[60, 0.1], [64, 0.1], [67, 0.1]], { read: 62 }));
+      }
+      expect(matched).toHaveLength(0);
+      expect(wrong).toEqual([{ i: 0, midi: 62 }]);
+    });
+
+    it("requires a fresh attack before crediting a degenerate (octave) tone", () => {
+      // C3+C4: C4 is spectrally inseparable from C3's even partials.
+      follower.start(makeChordEvents([[48, 60]]));
+      for (let t = 0; t <= 300; t += 30) {
+        follower.feed(chordFrame(t, [48, 60], { read: 48, degenerate: [60] }));
+      }
+      expect(matched).toHaveLength(0); // ringing spectrum alone: no credit
+      // A fresh attack (RMS jump) supplies the missing articulation.
+      follower.feed(chordFrame(330, [48, 60], { read: 48, rms: 0.3, degenerate: [60] }));
+      follower.feed(chordFrame(400, [48, 60], { read: 48, rms: 0.25, degenerate: [60] }));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("needs a re-articulation for a repeated chord", () => {
+      follower.start(makeChordEvents([CEG, CEG]));
+      follower.feed(chordFrame(0, CEG, { read: 60 }));
+      follower.feed(chordFrame(80, CEG, { read: 60 }));
+      expect(matched).toHaveLength(1);
+      // The same chord keeps ringing: must not advance again.
+      for (let t = 110; t <= 400; t += 30) {
+        follower.feed(chordFrame(t, CEG, { read: 60 }));
+      }
+      expect(matched).toHaveLength(1);
+      // Restrike (fresh attack) re-arms and completes the repeat.
+      follower.feed(chordFrame(430, CEG, { read: 60, rms: 0.3 }));
+      follower.feed(chordFrame(500, CEG, { read: 60, rms: 0.25 }));
+      expect(matched).toHaveLength(2);
+      expect(finishedCount).toBe(1);
+    });
+
+    it("falls back to any-tone matching when frames carry no evidence", () => {
+      follower.start(makeChordEvents([CEG]));
+      follower.feed(loud(0, 60));
+      follower.feed(loud(80, 60));
+      expect(matched).toHaveLength(1);
+    });
+
+    it("leaves single-note events on the monophonic path", () => {
+      follower.start(makeEvents([69]));
+      follower.feed(chordFrame(0, [[69, 0.05]], { read: 69 }));
+      follower.feed(chordFrame(80, [[69, 0.05]], { read: 69 }));
+      expect(matched).toHaveLength(1); // evidence ignored: 1 midi = mono rules
+    });
   });
 });

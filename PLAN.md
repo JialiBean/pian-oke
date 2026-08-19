@@ -88,6 +88,37 @@ on each note and advances only when the correct pitch is played.
 - [x] Visual polish: soft shadows, larger radii, button transitions, focus
       rings, gradient background.
 
+## v1.6 — Full-chord verification in piano mode (shipped 2026-08-19)
+
+- [x] Score-guided polyphonic ear (src/audio/chordVerify.ts): instead of
+      transcribing, it asks only "is there energy where each WRITTEN tone's
+      harmonics belong". 8192-point spectrum (~5.9 Hz bins at 48 kHz),
+      harmonic comb k=1..6 with 1/k weights, interpolated peak vs local
+      background median (worse side wins), shoulder rejection so a
+      neighbouring peak's slope can't fake evidence.
+- [x] Octave degeneracy handled honestly: a tone whose comb rides another
+      expected tone's partial series (octaves, twelfths, and major-third
+      partials over a deep bass — real physics at FFT resolution) is flagged
+      degenerate → optimistic spectral credit plus a required fresh attack.
+      Strictness degrades toward the old any-tone behavior, never below it.
+- [x] Engine: second AnalyserNode taps the mic for spectra only while chord
+      targets are registered; the monophonic detector path (tuner display,
+      violin mode) is untouched.
+- [x] Follower `requireAllTones` (default off): every written tone must show
+      evidence within a rolling ~400 ms window (tones may arrive in
+      different frames — rolled chords are fine); hold/re-articulation
+      logic unchanged; wrong-note reporting stays monophonic; frames
+      without evidence fall back to any-tone so nothing can brick.
+- [x] UI: "full chords" checkbox, piano mode only, persisted
+      (jv-full-chords), default off. Dev hook __jv extended (hit() carries
+      full evidence, partial() supplies one tone and must not advance).
+- [x] Verified: 70 unit tests (12 chordVerify on analytically synthesized
+      Blackman-windowed spectra, 10 new follower tests) + live e2e pass on
+      the To Zanarkand score (partial chord holds, full chord advances,
+      slips still reported, fallback on uncheck). Needs a real-piano test
+      by the user. If the classical ear proves too weak on real audio,
+      phase B is Basic Pitch (Spotify, Apache-2.0, ONNX in browser).
+
 ## Later (roadmap, not in v1)
 
 - iOS app: wrap the web app with Capacitor (WKWebView supports getUserMedia +

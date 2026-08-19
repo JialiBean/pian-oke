@@ -128,6 +128,13 @@ export default function App() {
       return false;
     }
   });
+  const [fullChords, setFullChords] = useState(() => {
+    try {
+      return localStorage.getItem("jv-full-chords") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [pdfImport, setPdfImport] = useState<{ bytes: Uint8Array; name: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -298,6 +305,26 @@ export default function App() {
   }, [mode]);
 
   useEffect(() => {
+    const f = followerRef.current;
+    if (f) f.cfg.requireAllTones = fullChords && mode === "piano";
+    try {
+      localStorage.setItem("jv-full-chords", fullChords ? "1" : "0");
+    } catch {
+      // best-effort
+    }
+  }, [fullChords, mode]);
+
+  // Tell the engine which chord to gather spectral evidence for: the current
+  // event, whenever full-chord verification is in effect for it.
+  useEffect(() => {
+    const engine = audioRef.current;
+    if (!engine) return;
+    const event = managerRef.current?.events[currentIndex];
+    const active = mode === "piano" && fullChords && event && event.midis.length >= 2;
+    engine.setChordTargets(active ? event.midis : null);
+  }, [currentIndex, fullChords, mode, eventCount, scoreTitle]);
+
+  useEffect(() => {
     showMistakesRef.current = showMistakes;
     try {
       localStorage.setItem("jv-show-mistakes", showMistakes ? "1" : "0");
@@ -331,9 +358,12 @@ export default function App() {
   }
 
   // Dev-only hooks so the follow logic can be exercised without a violin.
+  // Simulated frames carry per-tone chord evidence, so full-chord mode is
+  // testable too: hit() supplies every written tone, partial() only the
+  // first one (must NOT advance a 2+ note event when full chords is on).
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    const simulate = (correct: boolean) => {
+    const simulate = (correct: boolean, tones: "all" | "first" = "all") => {
       const follower = followerRef.current;
       if (!follower || follower.index >= follower.events.length) return;
       const event = follower.events[follower.index];
@@ -345,6 +375,11 @@ export default function App() {
         time: t,
         rms: 0.06,
         reading: toReading(freq, 0.97, 0.06, a4Ref.current),
+        chord: event.midis.map((m, i) => ({
+          midi: m,
+          evidence: correct && (tones === "all" || i === 0) ? 0.9 : 0.05,
+          degenerate: false,
+        })),
       });
       follower.feed(silent(t0));
       follower.feed(silent(t0 + 60));
@@ -356,6 +391,7 @@ export default function App() {
         for (let k = 0; k < n; k++) simulate(true);
       },
       miss: () => simulate(false),
+      partial: () => simulate(true, "first"),
       state: () => ({
         index: followerRef.current?.index,
         total: followerRef.current?.events.length,
@@ -721,6 +757,19 @@ export default function App() {
           />
           mistakes
         </label>
+        {mode === "piano" && (
+          <label
+            className="setting checkbox"
+            title="Require every written chord tone before advancing (not just one)"
+          >
+            <input
+              type="checkbox"
+              checked={fullChords}
+              onChange={(e) => setFullChords(e.target.checked)}
+            />
+            full chords
+          </label>
+        )}
         <label className="setting">
           speed
           <select
